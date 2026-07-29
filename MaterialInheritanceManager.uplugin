@@ -5,7 +5,7 @@
 	"FriendlyName": "Material Inheritance Manager",
 	"Description": "Visual tool for batch-managing material inheritance relationships. Auto-detect identical static-switch groups, auto-create/merge Material Instances, and redirect references in bulk.",
 	"Category": "Material",
-	"CreatedBy": "TAG3Tools",
+	"CreatedBy": "Material Tools",
 	"Modules": [
 		{
 			"Name": "MaterialInheritanceManager",

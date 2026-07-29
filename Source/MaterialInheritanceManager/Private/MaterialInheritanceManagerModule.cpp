@@ -91,37 +91,37 @@ void FMaterialInheritanceManagerModule::RegisterMenus_Internal()
 {
 	FToolMenuOwnerScoped OwnerScoped(this);
 
-	// Ensure TAG3Tools submenu exists (avoid duplicate)
+	// Ensure the "Material Tools" submenu exists (avoid duplicate)
 	{
 		UToolMenu* MainMenu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu");
 		FToolMenuSection& Section = MainMenu->FindOrAddSection(NAME_None);
 
-		bool bTag3ToolsExists = false;
+		bool bMaterialToolsExists = false;
 		for (FToolMenuEntry& Block : Section.Blocks)
 		{
-			if (Block.Name == "TAG3Tools")
+			if (Block.Name == "MaterialTools")
 			{
-				bTag3ToolsExists = true;
+				bMaterialToolsExists = true;
 				break;
 			}
 		}
 
-		if (!bTag3ToolsExists)
+		if (!bMaterialToolsExists)
 		{
 			FToolMenuEntry& ToolsEntry = Section.AddSubMenu(
-				"TAG3Tools",
-				LOCTEXT("TAG3ToolsMenu", "TAG3Tools"),
-				LOCTEXT("TAG3ToolsMenu_ToolTip", "TAG3 custom tools"),
+				"MaterialTools",
+				LOCTEXT("MaterialToolsMenu", "Material Tools"),
+				LOCTEXT("MaterialToolsMenu_ToolTip", "Material-related tools"),
 				FNewToolMenuChoice());
 			ToolsEntry.InsertPosition = FToolMenuInsert("Window", EToolMenuInsertType::After);
 		}
 	}
 
-	// Append our entry to TAG3Tools
-	UToolMenu* Tag3ToolsMenu = UToolMenus::Get()->RegisterMenu(
-		"LevelEditor.MainMenu.TAG3Tools", NAME_None, EMultiBoxType::Menu, false);
+	// Append our entry to "Material Tools"
+	UToolMenu* MaterialToolsMenu = UToolMenus::Get()->RegisterMenu(
+		"LevelEditor.MainMenu.MaterialTools", NAME_None, EMultiBoxType::Menu, false);
 	{
-		FToolMenuSection& Section = Tag3ToolsMenu->FindOrAddSection("MaterialInheritanceManager");
+		FToolMenuSection& Section = MaterialToolsMenu->FindOrAddSection("MaterialInheritanceManager");
 		Section.AddMenuEntry(
 			"MaterialInheritanceManager_Entry",
 			LOCTEXT("MIM_Entry", "材质继承管理器"),
