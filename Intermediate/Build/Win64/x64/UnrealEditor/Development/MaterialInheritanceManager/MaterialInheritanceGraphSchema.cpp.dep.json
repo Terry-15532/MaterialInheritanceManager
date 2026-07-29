@@ -1,0 +1,30 @@
+{
+    "Version": "1.2",
+    "Data": {
+        "Source": "c:\\users\\tairuili\\documents\\unreal projects\\materialtest2\\plugins\\materialinheritancemanager\\source\\materialinheritancemanager\\private\\materialinheritancegraphschema.cpp",
+        "ProvidedModule": "",
+        "PCH": "c:\\users\\tairuili\\documents\\unreal projects\\materialtest2\\intermediate\\build\\win64\\x64\\materialtesteditor\\development\\unrealed\\sharedpch.unrealed.project.valapi.valexpapi.cpp20.inclorderunreal5_4.h.pch",
+        "Includes": [
+            "c:\\users\\tairuili\\documents\\unreal projects\\materialtest2\\plugins\\materialinheritancemanager\\intermediate\\build\\win64\\x64\\unrealeditor\\development\\materialinheritancemanager\\definitions.materialinheritancemanager.h",
+            "c:\\users\\tairuili\\documents\\unreal projects\\materialtest2\\plugins\\materialinheritancemanager\\source\\materialinheritancemanager\\public\\materialinheritancegraphschema.h",
+            "c:\\users\\tairuili\\documents\\unreal projects\\materialtest2\\plugins\\materialinheritancemanager\\intermediate\\build\\win64\\unrealeditor\\inc\\materialinheritancemanager\\uht\\materialinheritancegraphschema.generated.h",
+            "c:\\users\\tairuili\\documents\\unreal projects\\materialtest2\\plugins\\materialinheritancemanager\\source\\materialinheritancemanager\\public\\materialinheritancegraphnode.h",
+            "c:\\users\\tairuili\\documents\\unreal projects\\materialtest2\\plugins\\materialinheritancemanager\\intermediate\\build\\win64\\unrealeditor\\inc\\materialinheritancemanager\\uht\\materialinheritancegraphnode.generated.h",
+            "c:\\program files\\epic games\\ue_5.7\\engine\\source\\editor\\grapheditor\\public\\connectiondrawingpolicy.h",
+            "c:\\program files\\epic games\\ue_5.7\\engine\\source\\editor\\grapheditor\\public\\grapheditorsettings.h",
+            "c:\\program files\\epic games\\ue_5.7\\engine\\source\\editor\\unrealed\\public\\edgraphnode_comment.h",
+            "c:\\program files\\epic games\\ue_5.7\\engine\\intermediate\\build\\win64\\unrealeditor\\inc\\unrealed\\uht\\edgraphnode_comment.generated.h",
+            "c:\\program files\\epic games\\ue_5.7\\engine\\intermediate\\build\\win64\\unrealeditor\\inc\\grapheditor\\uht\\grapheditorsettings.generated.h",
+            "c:\\program files\\epic games\\ue_5.7\\engine\\source\\editor\\grapheditor\\public\\graphsplineoverlapresult.h",
+            "c:\\program files\\epic games\\ue_5.7\\engine\\source\\editor\\grapheditor\\public\\sgraphpin.h",
+            "c:\\program files\\epic games\\ue_5.7\\engine\\source\\editor\\grapheditor\\public\\sgraphnode.h",
+            "c:\\program files\\epic games\\ue_5.7\\engine\\source\\editor\\grapheditor\\public\\snodepanel.h",
+            "c:\\program files\\epic games\\ue_5.7\\engine\\source\\runtime\\engine\\public\\diffresults.h",
+            "c:\\program files\\epic games\\ue_5.7\\engine\\source\\editor\\grapheditor\\public\\marqueeoperation.h",
+            "c:\\program files\\epic games\\ue_5.7\\engine\\intermediate\\build\\win64\\unrealeditor\\inc\\grapheditor\\uht\\snodepanel.generated.h",
+            "c:\\program files\\epic games\\ue_5.7\\engine\\source\\runtime\\slate\\public\\widgets\\layout\\swrapbox.h"
+        ],
+        "ImportedModules": [],
+        "ImportedHeaderUnits": []
+    }
+}

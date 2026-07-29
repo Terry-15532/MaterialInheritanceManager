@@ -1,0 +1,15 @@
+{
+    "Version": "1.2",
+    "Data": {
+        "Source": "c:\\users\\tairuili\\documents\\unreal projects\\materialtest2\\plugins\\materialinheritancemanager\\source\\materialinheritancemanager\\private\\materialinheritancemanagercommands.cpp",
+        "ProvidedModule": "",
+        "PCH": "c:\\users\\tairuili\\documents\\unreal projects\\materialtest2\\intermediate\\build\\win64\\x64\\materialtesteditor\\development\\unrealed\\sharedpch.unrealed.project.valapi.valexpapi.cpp20.inclorderunreal5_4.h.pch",
+        "Includes": [
+            "c:\\users\\tairuili\\documents\\unreal projects\\materialtest2\\plugins\\materialinheritancemanager\\intermediate\\build\\win64\\x64\\unrealeditor\\development\\materialinheritancemanager\\definitions.materialinheritancemanager.h",
+            "c:\\users\\tairuili\\documents\\unreal projects\\materialtest2\\plugins\\materialinheritancemanager\\source\\materialinheritancemanager\\public\\materialinheritancemanagercommands.h",
+            "c:\\users\\tairuili\\documents\\unreal projects\\materialtest2\\plugins\\materialinheritancemanager\\source\\materialinheritancemanager\\public\\materialinheritancemanagerstyle.h"
+        ],
+        "ImportedModules": [],
+        "ImportedHeaderUnits": []
+    }
+}
