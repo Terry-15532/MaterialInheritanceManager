@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "EdGraph/EdGraph.h"
 #include "AssetRegistry/AssetData.h"
+#include "MaterialInheritanceIndex.h"
 #include "MaterialInheritanceGraph.generated.h"
 
 class UMaterialInterface;
@@ -49,4 +50,5 @@ private:
 
 	/** Root material the graph is centered on (used when expanding a "..." node). */
 	FSoftObjectPath RootAssetPath;
+	FMaterialInheritanceIndex InheritanceIndex;
 };

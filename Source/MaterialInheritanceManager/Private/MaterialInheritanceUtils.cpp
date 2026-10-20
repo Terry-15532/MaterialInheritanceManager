@@ -164,6 +164,76 @@ FMaterialParamSnapshot ReadAllEffectiveParams(UMaterialInterface* Mat)
 // Read Static Switches
 // ============================================================================
 
+FMaterialParamSnapshot ReadMaterialVerificationSnapshot(UMaterialInterface* Mat)
+{
+	FMaterialParamSnapshot Snapshot = ReadAllEffectiveParams(Mat);
+	if (!Mat) return Snapshot;
+	const auto Key = [](EMaterialParameterType Type, const FMaterialParameterInfo& Info)
+	{
+		const TCHAR* Labels[] = { TEXT("标量"), TEXT("向量"), TEXT("双精度向量"), TEXT("纹理"),
+			TEXT("纹理集合"), TEXT("字体"), TEXT("虚拟纹理"), TEXT("稀疏体积纹理"),
+			TEXT("静态开关"), TEXT("参数集合"), TEXT("静态通道遮罩") };
+		static_assert(UE_ARRAY_COUNT(Labels) == static_cast<int32>(EMaterialParameterType::Num));
+		FString Result = FString::Printf(TEXT("%s %s"), Labels[static_cast<int32>(Type)], *Info.Name.ToString());
+		if (Info.Association != EMaterialParameterAssociation::GlobalParameter)
+			Result += FString::Printf(TEXT(" [关联=%d, 索引=%d]"), static_cast<int32>(Info.Association), Info.Index);
+		return Result;
+	};
+	for (int32 Index = 0; Index < static_cast<int32>(EMaterialParameterType::Num); ++Index)
+	{
+		const EMaterialParameterType Type = static_cast<EMaterialParameterType>(Index);
+		TMap<FMaterialParameterInfo, FMaterialParameterMetadata> Parameters;
+		Mat->GetAllParametersOfType(Type, Parameters);
+		for (const auto& Pair : Parameters) Snapshot.OverrideStates.Add(Key(Type, Pair.Key), false);
+	}
+	if (UMaterialInstanceConstant* Instance = Cast<UMaterialInstanceConstant>(Mat))
+	{
+		// Inspect local arrays, not inherited metadata. Null texture overrides and
+		// overrides equal to the parent value still have a checked checkbox.
+		const auto Add = [&](EMaterialParameterType Type, const auto& Values)
+		{
+			for (const auto& Value : Values)
+				Snapshot.OverrideStates.Add(Key(Type, Value.ParameterInfo), Value.IsOverride());
+		};
+		Add(EMaterialParameterType::Scalar, Instance->ScalarParameterValues);
+		Add(EMaterialParameterType::Vector, Instance->VectorParameterValues);
+		Add(EMaterialParameterType::DoubleVector, Instance->DoubleVectorParameterValues);
+		Add(EMaterialParameterType::Texture, Instance->TextureParameterValues);
+		Add(EMaterialParameterType::TextureCollection, Instance->TextureCollectionParameterValues);
+		Add(EMaterialParameterType::ParameterCollection, Instance->ParameterCollectionParameterValues);
+		Add(EMaterialParameterType::RuntimeVirtualTexture, Instance->RuntimeVirtualTextureParameterValues);
+		Add(EMaterialParameterType::SparseVolumeTexture, Instance->SparseVolumeTextureParameterValues);
+		Add(EMaterialParameterType::Font, Instance->FontParameterValues);
+		const FStaticParameterSet StaticParameters = Instance->GetStaticParameters();
+		Add(EMaterialParameterType::StaticSwitch, StaticParameters.StaticSwitchParameters);
+		Add(EMaterialParameterType::StaticComponentMask, StaticParameters.EditorOnly.StaticComponentMaskParameters);
+	}
+	return Snapshot;
+}
+
+bool CompareMaterialOverrideStates(const FMaterialParamSnapshot& Before,
+	const FMaterialParamSnapshot& After, FString& OutDiff)
+{
+	TSet<FString> Keys;
+	for (const auto& Pair : Before.OverrideStates) Keys.Add(Pair.Key);
+	for (const auto& Pair : After.OverrideStates) Keys.Add(Pair.Key);
+	TArray<FString> SortedKeys = Keys.Array();
+	SortedKeys.Sort();
+	bool bChanged = false;
+	for (const FString& Key : SortedKeys)
+	{
+		const bool bOld = Before.OverrideStates.FindRef(Key);
+		const bool bNew = After.OverrideStates.FindRef(Key);
+		if (bOld != bNew)
+		{
+			bChanged = true;
+			OutDiff += FString::Printf(TEXT("\n    %s 覆写: %s -> %s"), *Key,
+				bOld ? TEXT("勾选") : TEXT("未勾选"), bNew ? TEXT("勾选") : TEXT("未勾选"));
+		}
+	}
+	return bChanged;
+}
+
 FStaticSwitchSignature ReadStaticSwitches(UMaterialInstanceConstant* MI)
 {
 	FStaticSwitchSignature Sig;
@@ -433,7 +503,8 @@ FString GenerateSwitchSuffix(const FStaticSwitchSignature& Sig)
 
 UMaterialInstanceConstant* CreateOrGetSharedMI(
 	UMaterialInterface* ParentMat, const FStaticSwitchSignature& Sig,
-	const FString& OutputDir, const FString& FirstChildName)
+	const FString& OutputDir, const FString& FirstChildName,
+	TSet<UPackage*>& OutModifiedPackages)
 {
 	if (!ParentMat) return nullptr;
 
@@ -474,8 +545,7 @@ UMaterialInstanceConstant* CreateOrGetSharedMI(
 	NewMI->PostEditChange();
 	NewMI->MarkPackageDirty();
 	FAssetRegistryModule::AssetCreated(NewMI);
-	TArray<UPackage*> Pkgs = { NewMI->GetOutermost() };
-	FEditorFileUtils::PromptForCheckoutAndSave(Pkgs, false, false);
+	OutModifiedPackages.Add(NewMI->GetOutermost());
 	return NewMI;
 }
 
@@ -498,12 +568,12 @@ int32 ConsolidateReferences(UMaterialInstanceConstant* Target, const TArray<UMat
 // Reparent Instances (non-destructive)
 // ============================================================================
 
-int32 ReparentInstances(UMaterialInstanceConstant* NewParent, const TArray<UMaterialInstanceConstant*>& Instances)
+int32 ReparentInstances(UMaterialInstanceConstant* NewParent, const TArray<UMaterialInstanceConstant*>& Instances,
+	TSet<UPackage*>& OutModifiedPackages)
 {
 	if (!NewParent || Instances.Num() == 0) return 0;
 
 	int32 Count = 0;
-	TArray<UPackage*> ToSave;
 	const FString ParentPath = NewParent->GetPathName();
 
 	for (UMaterialInstanceConstant* Child : Instances)
@@ -522,12 +592,9 @@ int32 ReparentInstances(UMaterialInstanceConstant* NewParent, const TArray<UMate
 		Child->SetParentEditorOnly(NewParent);
 		Child->PostEditChange();
 		Child->MarkPackageDirty();
-		ToSave.AddUnique(Child->GetOutermost());
+		OutModifiedPackages.Add(Child->GetOutermost());
 		Count++;
 	}
-
-	if (ToSave.Num() > 0)
-		FEditorFileUtils::PromptForCheckoutAndSave(ToSave, false, false);
 
 	return Count;
 }
@@ -546,7 +613,8 @@ TMap<UMaterialInstanceConstant*, FMaterialParamSnapshot> BackupMaterialParams(
 }
 
 int32 RestoreMaterialParams(
-	const TMap<UMaterialInstanceConstant*, FMaterialParamSnapshot>& Backup)
+	const TMap<UMaterialInstanceConstant*, FMaterialParamSnapshot>& Backup,
+	TSet<UPackage*>* OutModifiedPackages)
 {
 	int32 Restored = 0;
 	for (const auto& Pair : Backup)
@@ -604,6 +672,7 @@ int32 RestoreMaterialParams(
 		{
 			M->PostEditChange();
 			M->MarkPackageDirty();
+			if (OutModifiedPackages) OutModifiedPackages->Add(M->GetOutermost());
 			Restored++;
 		}
 	}

@@ -202,7 +202,7 @@ TSharedRef<SWidget> SMaterialInheritanceSidebar::BuildSettingsTab()
 			+ SVerticalBox::Slot().AutoHeight().Padding(0,2) [ SNew(STextBlock).Text(LOCTEXT("Depth","展示层级:")).ColorAndOpacity(FLinearColor(0.5f,0.5f,0.5f)).Font(FCoreStyle::GetDefaultFontStyle("Regular",9)) ]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0,0,0,6) [ SNew(SBox).WidthOverride(60) [ SNew(SSpinBox<int32>).MinValue(1).MaxValue(10).Value_Lambda([this](){ return OwnerPanel?OwnerPanel->GetSearchDepth():4; }).OnValueCommitted_Lambda([this](int32 V,ETextCommit::Type){ if(OwnerPanel)OwnerPanel->SetSearchDepth(V); }).OnValueChanged_Lambda([this](int32 V){ if(OwnerPanel)OwnerPanel->SetSearchDepthLive(V); }) ]]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0,2) [ SNew(STextBlock).Text(LOCTEXT("MaxNodes","最大节点数:")).ColorAndOpacity(FLinearColor(0.5f,0.5f,0.5f)).Font(FCoreStyle::GetDefaultFontStyle("Regular",9)) ]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0,0,0,6) [ SNew(SBox).WidthOverride(60) [ SNew(SSpinBox<int32>).MinValue(1).MaxValue(500).Value_Lambda([this](){ return OwnerPanel?OwnerPanel->GetMaxNodeCount():200; }).OnValueCommitted_Lambda([this](int32 V,ETextCommit::Type){ if(OwnerPanel)OwnerPanel->SetMaxNodeCount(V); }).OnValueChanged_Lambda([this](int32 V){ if(OwnerPanel)OwnerPanel->SetMaxNodeCountLive(V); }) ]]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0,0,0,6) [ SNew(SBox).WidthOverride(70) [ SNew(SSpinBox<int32>).MinValue(1).MaxValue(2000).Value_Lambda([this](){ return OwnerPanel?OwnerPanel->GetMaxNodeCount():200; }).OnValueCommitted_Lambda([this](int32 V,ETextCommit::Type){ if(OwnerPanel)OwnerPanel->SetMaxNodeCount(V); }).OnValueChanged_Lambda([this](int32 V){ if(OwnerPanel)OwnerPanel->SetMaxNodeCountLive(V); }) ]]
 		];
 }
 
@@ -245,7 +245,7 @@ TSharedRef<SWidget> SMaterialInheritanceSidebar::BuildVerificationTab()
 					{
 						UMaterialInterface* Mat = Cast<UMaterialInterface>(AD.GetAsset());
 						if (!Mat) continue;
-					SnapshotData.Add(FSoftObjectPath(Mat), ReadAllEffectiveParams(Mat));
+					SnapshotData.Add(FSoftObjectPath(Mat), ReadMaterialVerificationSnapshot(Mat));
 					}
 					Log = FString::Printf(TEXT("[%s] 快照记录完成。\n共 %d 个材质/MI。"),
 						*FDateTime::Now().ToString(), Assets.Num());
@@ -293,11 +293,11 @@ TSharedRef<SWidget> SMaterialInheritanceSidebar::BuildVerificationTab()
 						continue;
 					}
 
-					FMaterialParamSnapshot NewSnap = ReadAllEffectiveParams(Mat);
+					FMaterialParamSnapshot NewSnap = ReadMaterialVerificationSnapshot(Mat);
 
 					// 比较有效参数值，并收集逐项的旧值/新值
 					FString Diff;
-					bool bChanged = false;
+					bool bChanged = CompareMaterialOverrideStates(*OldSnap, NewSnap, Diff);
 
 					// Scalars
 					{

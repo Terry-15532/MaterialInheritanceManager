@@ -5,10 +5,14 @@
 #include "MaterialInheritanceGraph.h"
 #include "MaterialInheritanceGraphNode.h"
 #include "MaterialInheritanceTypes.h"
+#include "MaterialInheritanceIndex.h"
 #include "MaterialInheritanceManagerConfig.h"
 
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "Materials/MaterialExpressionStaticSwitchParameter.h"
+#include "Materials/MaterialExpressionConstant3Vector.h"
+#include "Materials/MaterialExpressionMultiply.h"
 #include "Factories/MaterialInstanceConstantFactoryNew.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "MaterialEditingLibrary.h"
@@ -37,17 +41,89 @@
 #include "Widgets/Images/SImage.h"
 #include "EditorStyleSet.h"
 #include "Misc/MessageDialog.h"
+#include "Misc/ScopedSlowTask.h"
 #include "DesktopPlatformModule.h"
 #include "Interfaces/IPluginManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Containers/Ticker.h"
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "MaterialInheritancePanel"
 
 namespace
 {
+	constexpr const TCHAR* TestSourceMaterialPath = TEXT("/Game/Showcase/MaterialInheritance/M_Showcase_Master.M_Showcase_Master");
+	constexpr const TCHAR* TestParentMaterialName = TEXT("M_Showcase_Master");
+	constexpr int32 TestInstanceCount = 1000;
+	constexpr int32 TestDirectChildCount = 120;
+	const FName TestTintSwitch(TEXT("DemoTint"));
+	const FName TestGlossSwitch(TEXT("DemoGlossy"));
+
+	bool AddTestMaterialSwitches(UMaterial* Material)
+	{
+		if (!Material) return false;
+		UMaterialExpression* Color = UMaterialEditingLibrary::GetMaterialPropertyInputNode(Material, MP_BaseColor);
+		UMaterialExpression* Roughness = UMaterialEditingLibrary::GetMaterialPropertyInputNode(Material, MP_Roughness);
+		if (!Color || !Roughness) return false;
+		const FString ColorOutput = UMaterialEditingLibrary::GetMaterialPropertyInputNodeOutputName(Material, MP_BaseColor);
+		const FString RoughnessOutput = UMaterialEditingLibrary::GetMaterialPropertyInputNodeOutputName(Material, MP_Roughness);
+		auto* Tint = Cast<UMaterialExpressionConstant3Vector>(UMaterialEditingLibrary::CreateMaterialExpression(
+			Material, UMaterialExpressionConstant3Vector::StaticClass(), -600, -180));
+		auto* Gloss = Cast<UMaterialExpressionMultiply>(UMaterialEditingLibrary::CreateMaterialExpression(
+			Material, UMaterialExpressionMultiply::StaticClass(), -360, 300));
+		auto* TintSwitch = Cast<UMaterialExpressionStaticSwitchParameter>(UMaterialEditingLibrary::CreateMaterialExpression(
+			Material, UMaterialExpressionStaticSwitchParameter::StaticClass(), -120, 0));
+		auto* GlossSwitch = Cast<UMaterialExpressionStaticSwitchParameter>(UMaterialEditingLibrary::CreateMaterialExpression(
+			Material, UMaterialExpressionStaticSwitchParameter::StaticClass(), -120, 260));
+		if (!Tint || !Gloss || !TintSwitch || !GlossSwitch) return false;
+		Tint->Constant = FLinearColor(0.8f, 0.18f, 0.05f, 1.0f);
+		Gloss->ConstB = 0.35f;
+		TintSwitch->ParameterName = TestTintSwitch;
+		TintSwitch->DefaultValue = false;
+		GlossSwitch->ParameterName = TestGlossSwitch;
+		GlossSwitch->DefaultValue = false;
+		const bool bConnected =
+			UMaterialEditingLibrary::ConnectMaterialExpressions(Tint, TEXT(""), TintSwitch, TEXT("True")) &&
+			UMaterialEditingLibrary::ConnectMaterialExpressions(Color, ColorOutput, TintSwitch, TEXT("False")) &&
+			UMaterialEditingLibrary::ConnectMaterialExpressions(Roughness, RoughnessOutput, Gloss, TEXT("A")) &&
+			UMaterialEditingLibrary::ConnectMaterialExpressions(Gloss, TEXT(""), GlossSwitch, TEXT("True")) &&
+			UMaterialEditingLibrary::ConnectMaterialExpressions(Roughness, RoughnessOutput, GlossSwitch, TEXT("False")) &&
+			UMaterialEditingLibrary::ConnectMaterialProperty(TintSwitch, TEXT(""), MP_BaseColor) &&
+			UMaterialEditingLibrary::ConnectMaterialProperty(GlossSwitch, TEXT(""), MP_Roughness);
+		if (!bConnected) return false;
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+		return true;
+	}
+
+	using FAutoMergeGroups = TMap<UMaterialInterface*, TMap<FStaticSwitchSignature, TArray<UMaterialInstanceConstant*>>>;
+
+	FAutoMergeGroups CollectAutoMergeGroups(const TArray<UMaterialInstanceConstant*>& Instances)
+	{
+		FAutoMergeGroups Groups;
+		TMap<UMaterialInterface*, FStaticSwitchSignature> ParentSignatures;
+		for (UMaterialInstanceConstant* Instance : Instances)
+		{
+			if (!Instance || !Instance->Parent) continue;
+			UMaterialInterface* Parent = Instance->Parent;
+			const FStaticSwitchSignature ChildSig = ReadStaticSwitches(Instance);
+			FStaticSwitchSignature* ParentSig = ParentSignatures.Find(Parent);
+			if (!ParentSig)
+				ParentSig = &ParentSignatures.Add(Parent, ReadAllEffectiveParams(Parent).StaticSwitches);
+			if (ChildSig == *ParentSig) continue;
+			Groups.FindOrAdd(Parent).FindOrAdd(ChildSig).Add(Instance);
+		}
+		return Groups;
+	}
+
 	UMaterialInstanceConstant* CreateExampleMI(const FString& Name, UMaterialInterface* Parent, float Roughness, const TMap<FName, bool>& Switches, bool bSetRoughness, const FString& OutputDir = TEXT("/Game/Materials/MergeTest"))
 	{
+		if (!Parent)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[MIM] 测试实例 %s 缺少母材质。"), *Name);
+			return nullptr;
+		}
 		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
 		UMaterialInstanceConstantFactoryNew* Factory = NewObject<UMaterialInstanceConstantFactoryNew>();
 		Factory->InitialParent = Parent;
@@ -58,15 +134,22 @@ namespace
 			UE_LOG(LogTemp, Warning, TEXT("[MIM] 创建示例材质失败: %s"), *Name);
 			return nullptr;
 		}
+		for (const auto& P : Switches)
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MIC, P.Key, P.Value,
+				EMaterialParameterAssociation::GlobalParameter, false);
 		if (bSetRoughness)
 			UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MIC, FName(TEXT("Roughness")), Roughness);
-		for (const auto& P : Switches)
-			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MIC, P.Key, P.Value);
+		else if (Switches.Num() > 0)
+			UMaterialEditingLibrary::UpdateMaterialInstance(MIC);
 
 		UPackage* Pkg = MIC->GetOutermost();
 		Pkg->MarkPackageDirty();
 		FString Filename = FPackageName::LongPackageNameToFilename(Pkg->GetName(), FPackageName::GetAssetPackageExtension());
-		UPackage::SavePackage(Pkg, MIC, *Filename, FSavePackageArgs());
+		if (!UPackage::SavePackage(Pkg, MIC, *Filename, FSavePackageArgs()))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[MIM] 保存测试实例失败: %s"), *Filename);
+			return nullptr;
+		}
 		return MIC;
 	}
 
@@ -93,11 +176,10 @@ namespace
 			return;
 		}
 
-		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr,
-			TEXT("/Game/LevelPrototyping/Materials/M_PrototypeGrid.M_PrototypeGrid"));
+		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TestSourceMaterialPath);
 		if (!Base)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[MIM] 找不到 M_PrototypeGrid，无法生成性能测试材质。"));
+			UE_LOG(LogTemp, Warning, TEXT("[MIM] 找不到 %s，无法生成性能测试材质。"), TestSourceMaterialPath);
 			return;
 		}
 		Base->AddToRoot();
@@ -189,7 +271,7 @@ TSharedRef<SWidget> SMaterialInheritancePanel::BuildToolbar()
 			SNew(SButton)
 			.ButtonColorAndOpacity(FLinearColor(0.1f, 0.55f, 0.3f))
 			.ForegroundColor(FLinearColor::White)
-			.ToolTipText(LOCTEXT("RegenTip","重新生成一批用于测试的材质实例"))
+			.ToolTipText(LOCTEXT("Regen1000Tip","重新生成 1000 个材质实例，用于继承与归并测试"))
 			.OnClicked(this, &SMaterialInheritancePanel::OnRegenerateTestAssets)
 			[ SNew(STextBlock).Text(LOCTEXT("RegenBtn","重新生成测试用例")).Font(FCoreStyle::GetDefaultFontStyle("Bold", 10)) ]
 		]
@@ -250,11 +332,12 @@ FReply SMaterialInheritancePanel::OnRegenerateTestAssets()
 			.AutoWrapText(true)
 			.Justification(ETextJustify::Center));
 
-	// 1. 加载引擎自带的 Level Prototyping 材质作为复制源
-	UMaterialInterface* SourceParent = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/LevelPrototyping/Materials/M_PrototypeGrid.M_PrototypeGrid"));
+	// 1. 使用项目已有的展示母材质，保留原始展示资产。
+	UMaterialInterface* SourceParent = LoadObject<UMaterialInterface>(nullptr, TestSourceMaterialPath);
 	if (!SourceParent)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("NoParent","找不到 /Game/LevelPrototyping/Materials/M_PrototypeGrid，无法生成测试用例。"));
+		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(
+			FString::Printf(TEXT("找不到测试母材质：%s"), TestSourceMaterialPath)));
 		return FReply::Handled();
 	}
 	SourceParent->AddToRoot();
@@ -275,14 +358,27 @@ FReply SMaterialInheritancePanel::OnRegenerateTestAssets()
 		CollectGarbage(RF_NoFlags, true);
 	}
 
-	// 3. 复制一份 Level Prototyping 材质到 MergeTest，作为本批测试用例的母材质
+	// 3. 复制并保存到 MergeTest，作为本批测试用例的母材质。
 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	UObject* Dup = AssetTools.DuplicateAsset(TEXT("M_PrototypeGrid"), MergeTestDir, SourceParent);
+	UObject* Dup = AssetTools.DuplicateAsset(TestParentMaterialName, MergeTestDir, SourceParent);
 	UMaterialInterface* Parent = Cast<UMaterialInterface>(Dup);
 	SourceParent->RemoveFromRoot();
 	if (!Parent)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("DupFail","复制 Level Prototyping 材质失败，无法生成测试用例。"));
+		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("DupShowcaseFail","复制测试母材质失败，无法生成测试用例。"));
+		return FReply::Handled();
+	}
+	if (!AddTestMaterialSwitches(Cast<UMaterial>(Parent)))
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("TestSwitchSetupFail", "配置测试母材质的静态开关失败。"));
+		return FReply::Handled();
+	}
+	UPackage* ParentPackage = Parent->GetOutermost();
+	const FString ParentFilename = FPackageName::LongPackageNameToFilename(
+		ParentPackage->GetName(), FPackageName::GetAssetPackageExtension());
+	if (!UPackage::SavePackage(ParentPackage, Parent, *ParentFilename, FSavePackageArgs()))
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("SaveTestParentFail","保存测试母材质失败，无法生成测试用例。"));
 		return FReply::Handled();
 	}
 	Parent->AddToRoot();
@@ -295,15 +391,32 @@ FReply SMaterialInheritancePanel::OnRegenerateTestAssets()
 	{
 		UMaterialEditingLibrary::GetStaticSwitchParameterNames(BaseMat, SwitchNames);
 	}
-	FName s0 = SwitchNames.Num() > 0 ? SwitchNames[0] : NAME_None;
-	FName s1 = SwitchNames.Num() > 1 ? SwitchNames[1] : NAME_None;
-	bool bSetRoughness = SwitchNames.Num() > 0;
+	const FName s0 = TestTintSwitch;
+	const FName s1 = TestGlossSwitch;
+	TArray<FName> ScalarNames;
+	UMaterialEditingLibrary::GetScalarParameterNames(Parent, ScalarNames);
+	const bool bSetRoughness = ScalarNames.Contains(FName(TEXT("Roughness")));
 
-	// 5. 自动归并扇形（12 个直接子）
+	int32 CreatedInstanceCount = 0;
+	FScopedSlowTask GenerationProgress(TestInstanceCount, LOCTEXT("Generate1000Progress", "正在生成 1000 个测试实例..."));
+	GenerationProgress.MakeDialog();
+	const auto CreateTestMI = [&](const FString& Name, UMaterialInterface* InstanceParent,
+		float Roughness, const TMap<FName, bool>& InstanceSwitches) -> UMaterialInstanceConstant*
+	{
+		GenerationProgress.EnterProgressFrame(1.0f, FText::FromString(Name));
+		UMaterialInstanceConstant* Instance = CreateExampleMI(Name, InstanceParent,
+			Roughness, InstanceSwitches, bSetRoughness, OutDir);
+		if (Instance) ++CreatedInstanceCount;
+		return Instance;
+	};
+
+	// 5. 宽扇形（120 个直接子实例，演示大批量归并）
 	TArray<TPair<bool, bool>> Combos;
 	Combos.Add(TPair<bool, bool>(false, false));
 	Combos.Add(TPair<bool, bool>(true, false));
 	Combos.Add(TPair<bool, bool>(false, true));
+	Combos.Add(TPair<bool, bool>(true, true));
+	const int32 InstancesPerCombo = TestDirectChildCount / Combos.Num();
 	TMap<FName, bool> Switches;
 	TArray<UMaterialInstanceConstant*> AM;
 	for (int32 ci = 0; ci < Combos.Num(); ++ci)
@@ -311,18 +424,19 @@ FReply SMaterialInheritancePanel::OnRegenerateTestAssets()
 		Switches.Empty();
 		if (s0 != NAME_None) Switches.Add(s0, Combos[ci].Key);
 		if (s1 != NAME_None) Switches.Add(s1, Combos[ci].Value);
-		for (int32 k = 0; k < 4; ++k)
+		for (int32 k = 0; k < InstancesPerCombo; ++k)
 		{
 			FString Name = FString::Printf(TEXT("MI_AM_%d%d_%d"), Combos[ci].Key ? 1 : 0, Combos[ci].Value ? 1 : 0, k);
-			UMaterialInstanceConstant* MIC = CreateExampleMI(Name, Parent, 0.10f + k * 0.05f + ci * 0.02f, Switches, bSetRoughness, OutDir);
+			const float Roughness = 0.05f + ((k + ci * InstancesPerCombo) % 19) * 0.05f;
+			UMaterialInstanceConstant* MIC = CreateTestMI(Name, Parent, Roughness, Switches);
 			AM.Add(MIC);
 		}
 	}
 
 	// 6. 深链（层级限制演示）
 	UMaterialInstanceConstant* Cur = (AM.Num() > 0) ? AM[0] : nullptr;
-	for (int32 d = 2; d <= 6; ++d)
-		Cur = CreateExampleMI(FString::Printf(TEXT("MI_Chain_L%d"), d), Cur, 0.2f + d * 0.1f, TMap<FName, bool>(), bSetRoughness, OutDir);
+	for (int32 d = 2; d <= 6 && Cur; ++d)
+		Cur = CreateTestMI(FString::Printf(TEXT("MI_Chain_L%d"), d), Cur, 0.2f + d * 0.1f, TMap<FName, bool>());
 
 	// 7. 灌木树（节点数限制演示）
 	UMaterialInstanceConstant* Bush = (AM.Num() > 4) ? AM[4] : nullptr;
@@ -330,19 +444,44 @@ FReply SMaterialInheritancePanel::OnRegenerateTestAssets()
 	{
 		for (int32 i = 0; i < 4; ++i)
 		{
-			UMaterialInstanceConstant* L2 = CreateExampleMI(FString::Printf(TEXT("MI_Bush_L2_%d"), i), Bush, 0.30f + i * 0.10f, TMap<FName, bool>(), bSetRoughness, OutDir);
+			UMaterialInstanceConstant* L2 = CreateTestMI(FString::Printf(TEXT("MI_Bush_L2_%d"), i), Bush, 0.30f + i * 0.10f, TMap<FName, bool>());
 			if (L2)
 				for (int32 j = 0; j < 3; ++j)
-					CreateExampleMI(FString::Printf(TEXT("MI_Bush_L2_%d_L3_%d"), i, j), L2, 0.10f + j * 0.20f, TMap<FName, bool>(), bSetRoughness, OutDir);
+					CreateTestMI(FString::Printf(TEXT("MI_Bush_L2_%d_L3_%d"), i, j), L2, 0.10f + j * 0.20f, TMap<FName, bool>());
 		}
+	}
+
+	// 广度优先扩展四叉分支，补齐到 1000 个，避免堆成一条很长的继承链。
+	TArray<UMaterialInstanceConstant*> Frontier;
+	Frontier.Reserve(TestInstanceCount);
+	for (UMaterialInstanceConstant* Instance : AM)
+		if (Instance) Frontier.Add(Instance);
+	for (int32 i = 0; CreatedInstanceCount < TestInstanceCount && Frontier.IsValidIndex(i / 4); ++i)
+	{
+		UMaterialInstanceConstant* BranchParent = Frontier[i / 4];
+		TMap<FName, bool> BranchSwitches = ReadStaticSwitches(BranchParent).SwitchValues;
+		const FName FlippedSwitch = (i % 4 < 2) ? s0 : s1;
+		BranchSwitches.FindOrAdd(FlippedSwitch) = !BranchSwitches.FindRef(FlippedSwitch);
+		UMaterialInstanceConstant* Instance = CreateTestMI(
+			FString::Printf(TEXT("MI_Perf_%04d"), i), BranchParent,
+			0.05f + (i % 19) * 0.05f, BranchSwitches);
+		if (!Instance) break;
+		Frontier.Add(Instance);
 	}
 
 	// 8. 自动归并输出目录指向 MergeTest/MI_AutoGenerated
 	SetOutputDirectory(AutoGenDir);
+	if (Config)
+	{
+		Config->MaxNodeCount = 2000;
+		Config->SearchDepth = 8;
+		SaveConfig();
+	}
 
 	// 9. 提示生成位置
+	UE_LOG(LogTemp, Log, TEXT("[MIM] 测试实例已生成并保存：%d/%d，目录：%s"), CreatedInstanceCount, TestInstanceCount, *MergeTestDir);
 	FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(
-		FString::Printf(TEXT("测试用例已重新生成。\n\n母材质：%s/M_PrototypeGrid\n子实例目录：%s\n自动归并输出目录：%s"), *MergeTestDir, *MergeTestDir, *AutoGenDir)));
+		FString::Printf(TEXT("已生成并保存 %d/%d 个测试实例。\n\n母材质：%s/%s\n子实例目录：%s\n自动归并输出目录：%s"), CreatedInstanceCount, TestInstanceCount, *MergeTestDir, TestParentMaterialName, *MergeTestDir, *AutoGenDir)));
 
 	// 10. 延迟 0.5 秒后扫描资产注册表，再查看母材质继承树。
 	//     刚写入磁盘的 MI 尚未被 AssetRegistry 索引，必须等其入库后再 ShowGraph，否则图中只显示单个父节点。
@@ -581,14 +720,15 @@ void SMaterialInheritancePanel::ExecuteAutoGroupMerge()
 	if(!CurrentMaterial) return;
 
 	// 递归遍历整棵继承树，收集所有材质实例（不只直接子级）。
+	FMaterialInheritanceIndex InheritanceIndex;
+	InheritanceIndex.Build();
 	TSet<UMaterialInstanceConstant*> AllDescendants;
 	TArray<UMaterialInterface*> Queue;
 	Queue.Add(CurrentMaterial);
 	while(Queue.Num())
 	{
 		UMaterialInterface* Node = Queue.Pop();
-		TArray<FAssetData> Children;
-		UMaterialEditingLibrary::GetChildInstances(Node, Children);
+		const TArray<FAssetData> Children = InheritanceIndex.GetChildren(FSoftObjectPath(Node));
 		for(const FAssetData& Ad : Children)
 		{
 			if(UMaterialInstanceConstant* M = Cast<UMaterialInstanceConstant>(Ad.GetAsset()))
@@ -609,23 +749,12 @@ void SMaterialInheritancePanel::ExecuteAutoGroupMerge()
 
 	// 按 (直接母材质/实例, 子级静态开关签名) 分组；
 	// 仅当子级静态开关与其直接母级不同时才纳入归并（母级开关与子级相同则无合并意义）。
-	TMap<UMaterialInterface*, TMap<FStaticSwitchSignature, TArray<UMaterialInstanceConstant*>>> Groups;
-	for(UMaterialInstanceConstant* M : AllDescendants)
-	{
-		UMaterialInterface* Parent = M->Parent;
-		if(!Parent) continue;
-		FStaticSwitchSignature ChildSig = ReadStaticSwitches(M);
-		FStaticSwitchSignature ParentSig;
-		if(UMaterialInstanceConstant* ParentMIC = Cast<UMaterialInstanceConstant>(Parent))
-			ParentSig = ReadStaticSwitches(ParentMIC);
-		if(ChildSig == ParentSig) continue;
-		Groups.FindOrAdd(Parent).FindOrAdd(ChildSig).Add(M);
-	}
+	FAutoMergeGroups Groups = CollectAutoMergeGroups(AllDescendants.Array());
 
-	int32 TotalToMerge = 0;
+	int32 TotalToMerge = 0, TotalGroups = 0;
 	for(auto& Outer : Groups)
 		for(auto& Inner : Outer.Value)
-			if(Inner.Value.Num() >= 2) TotalToMerge += Inner.Value.Num();
+			if(Inner.Value.Num() >= 2) { TotalToMerge += Inner.Value.Num(); ++TotalGroups; }
 
 	if(TotalToMerge < 2)
 	{
@@ -634,28 +763,28 @@ void SMaterialInheritancePanel::ExecuteAutoGroupMerge()
 		return;
 	}
 
-	// 归并前弹出确认框，列出具体会被归并的材质
+	// 大规模测试只列分组摘要，避免数百个名称把确认框撑出屏幕。
 	FString MergeDetail;
+	int32 ShownGroups = 0;
 	for(auto& Outer : Groups)
 	{
 		for(auto& Inner : Outer.Value)
 		{
 			if(Inner.Value.Num() < 2) continue;
+			if (ShownGroups >= 6) continue;
 			const FString ParentName = Outer.Key ? Outer.Key->GetName() : TEXT("?");
-			FString ChildrenNames;
-			for(int32 Idx = 0; Idx < Inner.Value.Num(); ++Idx)
-			{
-				if(Idx > 0) ChildrenNames += TEXT(", ");
-				ChildrenNames += (Inner.Value[Idx] ? Inner.Value[Idx]->GetName() : TEXT("?"));
-			}
-			MergeDetail += FString::Printf(TEXT("\n· 共享母材质[%s] 下: %s"), *ParentName, *ChildrenNames);
+			MergeDetail += FString::Printf(TEXT("\n· %s：%d 个实例（%s）"), *ParentName,
+				Inner.Value.Num(), *Inner.Key.ToDisplayString());
+			++ShownGroups;
 		}
 	}
+	if (TotalGroups > ShownGroups)
+		MergeDetail += FString::Printf(TEXT("\n另有 %d 组。"), TotalGroups - ShownGroups);
 
 	const EAppReturnType::Type Choice = FMessageDialog::Open(EAppMsgType::YesNo,
-		FText::Format(LOCTEXT("MergeTree",
-			"扫描完毕，将对{0} 个材质实例执行自动归并，是否继续？\n{1}"),
-			FText::AsNumber(TotalToMerge), FText::FromString(MergeDetail)));
+		FText::Format(LOCTEXT("MergeTreeSummary",
+			"将 {0} 个实例归入 {1} 个共享母实例，是否继续？\n{2}"),
+			FText::AsNumber(TotalToMerge), FText::AsNumber(TotalGroups), FText::FromString(MergeDetail)));
 	if(Choice != EAppReturnType::Yes) return;
 
 	// 操作前备份整棵继承树中所有材质实例的有效参数（含未 override 的，因为母材质会变），
@@ -663,6 +792,10 @@ void SMaterialInheritancePanel::ExecuteAutoGroupMerge()
 	TArray<UMaterialInstanceConstant*> AllDescArray = AllDescendants.Array();
 	auto Backup = BackupMaterialParams(AllDescArray);
 
+	// Helpers only collect packages. Save once, after the safety net has restored parameters.
+	TSet<UPackage*> ModifiedPackages;
+	FScopedSlowTask MergeProgress(TotalGroups + 2, LOCTEXT("AutoMergeProgress", "正在自动归并材质实例…"));
+	MergeProgress.MakeDialog();
 	int32 Cr = 0, Cn = 0;
 	for(auto& Outer : Groups)
 	{
@@ -670,17 +803,31 @@ void SMaterialInheritancePanel::ExecuteAutoGroupMerge()
 		for(auto& Inner : Outer.Value)
 		{
 			if(Inner.Value.Num() <= 1) continue;
+			MergeProgress.EnterProgressFrame(1, LOCTEXT("AutoMergeGrouping", "正在归并…"));
 			const FString FirstName = Inner.Value[0] ? Inner.Value[0]->GetName() : TEXT("");
-			if(UMaterialInstanceConstant* Shared = CreateOrGetSharedMI(Parent, Inner.Key, GetOutputDirectory(), FirstName))
+			if(UMaterialInstanceConstant* Shared = CreateOrGetSharedMI(Parent, Inner.Key, GetOutputDirectory(), FirstName, ModifiedPackages))
 			{
 				Cr++;
-				Cn += ReparentInstances(Shared, Inner.Value);
+				Cn += ReparentInstances(Shared, Inner.Value, ModifiedPackages);
 			}
 		}
 	}
 
 	// 操作后强制还原所有材质实例的有效参数，确保无漂移
-	const int32 Restored = RestoreMaterialParams(Backup);
+	MergeProgress.EnterProgressFrame(1, LOCTEXT("AutoMergeRestore", "正在校验参数…"));
+	const int32 Restored = RestoreMaterialParams(Backup, &ModifiedPackages);
+	MergeProgress.EnterProgressFrame(1, LOCTEXT("AutoMergeSave", "正在统一保存修改的资产…"));
+	if (!ModifiedPackages.IsEmpty())
+	{
+		const TArray<UPackage*> PackagesToSave = ModifiedPackages.Array();
+		if (FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, true, false) != FEditorFileUtils::PR_Success)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("AutoMergeSaveIncomplete",
+				"归并已完成，但部分资产未保存。未保存的修改仍保留在编辑器中，请检查权限或版本控制后手动保存。"));
+			RequestGraphRefresh({});
+			return;
+		}
+	}
 
 	FMessageDialog::Open(EAppMsgType::Ok, FText::Format(LOCTEXT("MD",
 		"已创建 {0} 个共享母材质，归并了 {1} 个材质实例。操作后已强制还原 {2} 个材质实例的参数，确保无漂移。"),
@@ -752,5 +899,74 @@ void SMaterialInheritancePanel::SelectNodesByAssets(const TArray<UObject*>& Asse
 }
 void SMaterialInheritancePanel::LoadConfig(){Config=GetMutableDefault<UMaterialInheritanceManagerConfig>();if(Config)Config->LoadConfig();}
 void SMaterialInheritancePanel::SaveConfig(){if(Config)Config->SaveConfig();}
+
+#if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMaterialInheritanceAutoMergeShowcaseTest,
+	"EditorTools.MaterialInheritance.AutoMergeShowcase",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMaterialInheritanceAutoMergeShowcaseTest::RunTest(const FString& Parameters)
+{
+	UMaterial* Source = LoadObject<UMaterial>(nullptr, TestSourceMaterialPath);
+	if (!TestNotNull(TEXT("Project showcase source loads"), Source)) return false;
+	UMaterial* Material = DuplicateObject<UMaterial>(Source, GetTransientPackage());
+	Material->SetFlags(RF_Transient);
+	if (!TestTrue(TEXT("Test switches connect to material outputs"), AddTestMaterialSwitches(Material))) return false;
+	TArray<UMaterialInstanceConstant*> Instances;
+	const auto NewInstance = [&](UMaterialInterface* Parent, bool bTint, bool bGloss, float Roughness)
+	{
+		auto* Instance = NewObject<UMaterialInstanceConstant>(GetTransientPackage());
+		Instance->SetParentEditorOnly(Parent);
+		Instance->SetStaticSwitchParameterValueEditorOnly(FMaterialParameterInfo(TestTintSwitch), bTint);
+		Instance->SetStaticSwitchParameterValueEditorOnly(FMaterialParameterInfo(TestGlossSwitch), bGloss);
+		Instance->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(TEXT("Roughness")), Roughness);
+		UMaterialEditingLibrary::UpdateMaterialInstance(Instance);
+		return Instance;
+	};
+	for (int32 Combo = 0; Combo < 4; ++Combo)
+		for (int32 Sibling = 0; Sibling < 2; ++Sibling)
+			Instances.Add(NewInstance(Material, (Combo & 1) != 0, (Combo & 2) != 0, 0.1f + Combo * 0.15f + Sibling * 0.05f));
+	Instances.Add(NewInstance(Instances[2], false, false, 0.3f));
+	Instances.Add(NewInstance(Instances[2], false, false, 0.4f));
+	Instances.Add(NewInstance(Instances[4], true, true, 0.6f));
+	Instances.Add(NewInstance(Instances[4], true, true, 0.7f));
+
+	FAutoMergeGroups Groups = CollectAutoMergeGroups(Instances);
+	int32 GroupCount = 0, MergeCount = 0;
+	for (const auto& Parents : Groups)
+		for (const auto& Group : Parents.Value)
+			if (Group.Value.Num() >= 2) { ++GroupCount; MergeCount += Group.Value.Num(); }
+	TestEqual(TEXT("Three root groups plus two nested groups"), GroupCount, 5);
+	TestEqual(TEXT("Default controls excluded"), MergeCount, 10);
+	TArray<UMaterialInstanceConstant*> SharedInstances;
+	for (const auto& Parents : Groups)
+	{
+		for (const auto& Group : Parents.Value)
+		{
+			if (Group.Value.Num() < 2) continue;
+			auto* Shared = NewInstance(Parents.Key, Group.Key.SwitchValues.FindRef(TestTintSwitch),
+				Group.Key.SwitchValues.FindRef(TestGlossSwitch), 0.42f);
+			SharedInstances.Add(Shared);
+			for (UMaterialInstanceConstant* Child : Group.Value)
+			{
+				const FMaterialParamSnapshot Before = ReadAllEffectiveParams(Child);
+				UMaterialEditingLibrary::SetMaterialInstanceParent(Child, Shared);
+				UMaterialEditingLibrary::UpdateMaterialInstance(Child);
+				const FMaterialParamSnapshot After = ReadAllEffectiveParams(Child);
+				TestTrue(TEXT("Static switch values survive regrouping"), Before.StaticSwitches == After.StaticSwitches);
+				TestEqual(TEXT("Roughness survives regrouping"), After.Scalars.FindRef(TEXT("Roughness")), Before.Scalars.FindRef(TEXT("Roughness")));
+				TestTrue(TEXT("BaseTint survives regrouping"), After.Vectors.FindRef(TEXT("BaseTint")).Equals(Before.Vectors.FindRef(TEXT("BaseTint"))));
+			}
+		}
+	}
+	Instances.Append(SharedInstances);
+	int32 SecondMergeCount = 0;
+	for (const auto& Parents : CollectAutoMergeGroups(Instances))
+		for (const auto& Group : Parents.Value)
+			if (Group.Value.Num() >= 2) SecondMergeCount += Group.Value.Num();
+	TestEqual(TEXT("Second merge finds no eligible groups"), SecondMergeCount, 0);
+	return true;
+}
+#endif
 
 #undef LOCTEXT_NAMESPACE

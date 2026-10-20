@@ -1,0 +1,22 @@
+# Unreal-generated files; keep source, configuration, documentation and resources.
+/Binaries/
+/Intermediate/
+/Saved/
+/DerivedDataCache/
+*.upluginmanifest
+
+# Local IDE state and generated solutions.
+/.vs/
+/.idea/
+/.vscode/
+*.sln
+*.suo
+*.VC.db
+*.VC.opendb
+
+# Python and operating-system caches.
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+Desktop.ini

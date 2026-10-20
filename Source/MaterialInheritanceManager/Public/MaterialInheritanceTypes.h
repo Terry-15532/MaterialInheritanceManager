@@ -37,6 +37,9 @@ struct FMaterialParamSnapshot
 	TMap<FName, FLinearColor> Vectors;
 	TMap<FName, TSoftObjectPtr<UTexture>> Textures;
 	FStaticSwitchSignature StaticSwitches;
+	// Verification only: local checkbox states, keyed by type + full parameter identity.
+	// Kept separate from effective values used by merge/restore operations.
+	TMap<FString, bool> OverrideStates;
 
 	bool IsEmpty() const;
 	FString ToDisplayString() const;
@@ -80,6 +83,12 @@ FMaterialParamSnapshot ReadAllParams(UMaterialInstanceConstant* MI);
  *  value is not mistaken for a change. */
 FMaterialParamSnapshot ReadAllEffectiveParams(UMaterialInterface* Mat);
 
+/** Effective values plus this instance's local override checkbox states. */
+FMaterialParamSnapshot ReadMaterialVerificationSnapshot(UMaterialInterface* Mat);
+/** Append checkbox differences; returns true even if all effective values are unchanged. */
+bool CompareMaterialOverrideStates(const FMaterialParamSnapshot& Before,
+	const FMaterialParamSnapshot& After, FString& OutDiff);
+
 /** Backup the *effective* (inheritance-resolved) parameters of the given material instances.
  *  Use before a mutating operation: even values inherited from a parent are captured, because
  *  the parent may change during the operation. */
@@ -88,9 +97,11 @@ TMap<UMaterialInstanceConstant*, FMaterialParamSnapshot> BackupMaterialParams(
 
 /** After a mutating operation, force every backed-up material's effective parameters back to
  *  the backed-up values by re-applying overrides where needed. Returns the number of materials
- *  that required a change. This guarantees operations never leave a material's parameters altered. */
+ *  that required a change. This guarantees operations never leave a material's parameters altered.
+ *  If supplied, OutModifiedPackages also collects packages changed by this safety net. */
 int32 RestoreMaterialParams(
-	const TMap<UMaterialInstanceConstant*, FMaterialParamSnapshot>& Backup);
+	const TMap<UMaterialInstanceConstant*, FMaterialParamSnapshot>& Backup,
+	TSet<UPackage*>* OutModifiedPackages = nullptr);
 
 /** Read static-switch values only. */
 FStaticSwitchSignature ReadStaticSwitches(UMaterialInstanceConstant* MI);
@@ -114,12 +125,14 @@ FString GenerateSwitchSuffix(const FStaticSwitchSignature& Signature);
 
 /** Create or get a shared MI with specific static-switch overrides.
  *  The created MI is named as the first child instance's name + "_Parent".
- *  ParentMaterial may be a base UMaterial or an intermediate UMaterialInstanceConstant. */
+ *  ParentMaterial may be a base UMaterial or an intermediate UMaterialInstanceConstant.
+ *  Adds new packages to OutModifiedPackages without saving; the caller saves the whole operation. */
 UMaterialInstanceConstant* CreateOrGetSharedMI(
 	UMaterialInterface* ParentMaterial,
 	const FStaticSwitchSignature& Signature,
 	const FString& OutputDir,
-	const FString& FirstChildName);
+	const FString& FirstChildName,
+	TSet<UPackage*>& OutModifiedPackages);
 
 /** Consolidate all references from Sources to Target. */
 int32 ConsolidateReferences(
@@ -130,7 +143,9 @@ int32 ConsolidateReferences(
  * Non-destructively reparent instances to NewParent, preserving every parameter
  * override (scalars, vectors, textures, static switches) on the instances.
  * No asset is deleted. Returns the number of instances reparented.
+ * Adds changed packages to OutModifiedPackages without saving.
  */
 int32 ReparentInstances(
 	UMaterialInstanceConstant* NewParent,
-	const TArray<UMaterialInstanceConstant*>& Instances);
+	const TArray<UMaterialInstanceConstant*>& Instances,
+	TSet<UPackage*>& OutModifiedPackages);

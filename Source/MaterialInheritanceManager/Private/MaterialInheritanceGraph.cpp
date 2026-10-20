@@ -15,30 +15,12 @@ void UMaterialInheritanceGraph::ClearGraph() { TArray<UEdGraphNode*> All = Nodes
 
 FAssetData UMaterialInheritanceGraph::GetParentAssetData(const FAssetData& A) const
 {
-	FAssetRegistryModule& M = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-	if (A.GetClass() && A.GetClass()->IsChildOf(UMaterialInstanceConstant::StaticClass()))
-	{
-		FString P; if (A.GetTagValue(FName("Parent"), P) && !P.IsEmpty())
-		{
-			FAssetData D = M.Get().GetAssetByObjectPath(FSoftObjectPath(P));
-			if (D.IsValid()) return D;
-		}
-	}
-	return FAssetData();
+	return InheritanceIndex.GetParent(A.GetSoftObjectPath());
 }
 
 TArray<FAssetData> UMaterialInheritanceGraph::GetChildren(const FAssetData& A)
 {
-	FAssetRegistryModule& M = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-	TArray<FName> R; M.Get().GetReferencers(A.PackageName, R, UE::AssetRegistry::EDependencyCategory::All);
-	TArray<FAssetData> O;
-	for (FName& P : R)
-	{
-		FAssetData D = M.Get().GetAssetByObjectPath(FSoftObjectPath(FString::Printf(TEXT("%s.%s"), *P.ToString(), *FPaths::GetBaseFilename(P.ToString()))));
-		if (D.IsValid() && D.GetClass() && D.GetClass()->IsChildOf(UMaterialInstanceConstant::StaticClass())) O.Add(D);
-	}
-	O.Sort([](const FAssetData& X, const FAssetData& Y) { return X.AssetName.ToString() < Y.AssetName.ToString(); });
-	return O;
+	return InheritanceIndex.GetChildren(A.GetSoftObjectPath());
 }
 
 UMaterialInheritanceGraphNode* UMaterialInheritanceGraph::PlaceNode(const FAssetData& A, int32 D, float X, float Y)
@@ -166,6 +148,7 @@ void UMaterialInheritanceGraph::RebuildGraph(UMaterialInterface* Sel, int32 InMa
 {
 	ClearGraph();
 	if (!Sel) { NotifyGraphChanged(); return; }
+	InheritanceIndex.Build();
 
 	FSoftObjectPath NewRoot(Sel);
 	if (NewRoot != RootAssetPath)
@@ -230,8 +213,7 @@ void UMaterialInheritanceGraph::RebuildGraph(UMaterialInterface* Sel, int32 InMa
 	{
 		FAssetData P = GetParentAssetData(Cur);
 		if (!P.IsValid()) break;
-		FAssetData PD = AR.GetAssetByObjectPath(P.GetSoftObjectPath());
-		if (!PD.IsValid()) break;
+		FAssetData PD = P;
 		if (PNC >= MaxNodeCount) break;
 		if (Col > MaxDepth) break;
 

@@ -13,6 +13,9 @@
 #include "ToolMenuSection.h"
 #include "ToolMenuMisc.h"
 #include "Widgets/Input/SButton.h"
+#include "Interfaces/IPluginManager.h"
+#include "HAL/PlatformProcess.h"
+#include "Misc/Paths.h"
 
 #define LOCTEXT_NAMESPACE "MaterialInheritanceManagerModule"
 
@@ -91,35 +94,43 @@ void FMaterialInheritanceManagerModule::RegisterMenus_Internal()
 {
 	FToolMenuOwnerScoped OwnerScoped(this);
 
-	// Ensure the "Material Tools" submenu exists (avoid duplicate)
+	// Shared pipeline and material category.
 	{
 		UToolMenu* MainMenu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu");
 		FToolMenuSection& Section = MainMenu->FindOrAddSection(NAME_None);
-
-		bool bMaterialToolsExists = false;
+		bool bPipelineExists = false;
 		for (FToolMenuEntry& Block : Section.Blocks)
 		{
-			if (Block.Name == "MaterialTools")
+			if (Block.Name == "PipelineTools")
 			{
-				bMaterialToolsExists = true;
+				bPipelineExists = true;
 				break;
 			}
 		}
-
-		if (!bMaterialToolsExists)
+		if (!bPipelineExists)
 		{
 			FToolMenuEntry& ToolsEntry = Section.AddSubMenu(
-				"MaterialTools",
-				LOCTEXT("MaterialToolsMenu", "Material Tools"),
-				LOCTEXT("MaterialToolsMenu_ToolTip", "Material-related tools"),
+				"PipelineTools",
+				LOCTEXT("PipelineToolsMenu", "管线工具"),
+				LOCTEXT("PipelineToolsMenu_ToolTip", "管线工具"),
 				FNewToolMenuChoice());
 			ToolsEntry.InsertPosition = FToolMenuInsert("Window", EToolMenuInsertType::After);
 		}
 	}
-
-	// Append our entry to "Material Tools"
+	UToolMenu* PipelineMenu = UToolMenus::Get()->RegisterMenu("LevelEditor.MainMenu.PipelineTools", NAME_None, EMultiBoxType::Menu, false);
+	FToolMenuSection& PipelineSection = PipelineMenu->FindOrAddSection(NAME_None);
+	bool bMaterialToolsExists = false;
+	for (FToolMenuEntry& Block : PipelineSection.Blocks)
+	{
+		if (Block.Name == "MaterialTools") { bMaterialToolsExists = true; break; }
+	}
+	if (!bMaterialToolsExists)
+	{
+		PipelineSection.AddSubMenu("MaterialTools", LOCTEXT("MaterialToolsMenu", "材质工具"),
+			LOCTEXT("MaterialToolsTip", "材质工具"), FNewToolMenuChoice());
+	}
 	UToolMenu* MaterialToolsMenu = UToolMenus::Get()->RegisterMenu(
-		"LevelEditor.MainMenu.MaterialTools", NAME_None, EMultiBoxType::Menu, false);
+		"LevelEditor.MainMenu.PipelineTools.MaterialTools", NAME_None, EMultiBoxType::Menu, false);
 	{
 		FToolMenuSection& Section = MaterialToolsMenu->FindOrAddSection("MaterialInheritanceManager");
 		Section.AddMenuEntry(
